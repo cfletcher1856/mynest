@@ -15,9 +15,6 @@ class NestException(Exception):
 class NestHttpError(NestException):
     pass
 
-class NestInvalidResponse(NestHttpError):
-    pass
-
 class NestUnauthorized(NestException):
     pass
 
@@ -53,6 +50,10 @@ class Nest(object):
         self.user = user
         self.url = url
         self.data = data
+        self.device = None
+        self.shared = None
+        self.structure = None
+        self.link = None
 
         if token is None:
             self.login()
@@ -90,17 +91,21 @@ class Nest(object):
             'password': self.password
         }
         response = self.send_request('/user/login', payload=payload)
+        if not response.get('urls'):
+            raise NestUnauthorized('Login', 'Response did not contain Transport URL')
         self.token = response.get('access_token')
         self.user_id = response.get('userid')
         self.user = response.get('user')
-        self.url = response.get('urls', {}).get('transport_url', self.url)
+        self.url = response.get('urls').get('transport_url', self.url)
         self.is_authenticated = True
 
     def get_status(self):
         response = self.send_request('/v3/mobile/{0}'.format(self.user))
         self.data = response
-        from pprint import pprint
-        pprint(response)
+        self.device = response.get('device', {})
+        self.shared = response.get('shared', {})
+        self.structure = response.get('structure', {})
+        self.link = response.get('link', {})
 
     def _convertFahrenheitToCelsius(self, temp):
         return float(temp - 32) * float(5.0 / 9.0)
@@ -124,7 +129,7 @@ class Nest(object):
 
     def get_device_temp_scale(self, serial_number=None):
         serial_number = self.get_default_serial(serial_number)
-        return self.data.get('device').get(serial_number).get('temperature_scale')
+        return self.device.get(serial_number).get('temperature_scale')
 
     def get_weather(self, postal_code=None):
         if postal_code is None:
@@ -140,7 +145,7 @@ class Nest(object):
 
     def get_user_locations(self):
         self.get_status()
-        structures = self.data.get('structure')
+        structures = self.structure
         user_structures = []
         for structure_id, structure in structures.iteritems():
             protects = [p.get('serial_number') for p in self.data.get('topaz', []) if p.get('structure_id') == structure_id]
@@ -206,53 +211,53 @@ class Nest(object):
 
                 return info
 
-        structure = self.data.get('link').get(serial_number).get('structure').split('.')[1]
-        manual_away = self.data.get('structure').get(structure).get('away')
-        mode = self.data.get('device').get(serial_number).get('current_schedule_mode').lower()
-        target_mode = self.data.get('shared').get(serial_number).get('target_temperature_type')
+        structure = self.link.get(serial_number).get('structure').split('.')[1]
+        manual_away = self.structure.get(structure).get('away')
+        mode = self.device.get(serial_number).get('current_schedule_mode').lower()
+        target_mode = self.shared.get(serial_number).get('target_temperature_type')
 
-        if manual_away or mode == 'away' or self.data.get('shared').get(serial_number).get('auto_away') > 0:
+        if manual_away or mode == 'away' or self.shared.get(serial_number).get('auto_away') > 0:
             mode = "{0},away".format(mode)
             target_mode = 'range'
-            away_temp_low = self.data.get('device').get(serial_number).get('away_temperature_low')
-            away_temp_high = self.data.get('device').get(serial_number).get('away_temperature_high')
+            away_temp_low = self.device.get(serial_number).get('away_temperature_low')
+            away_temp_high = self.device.get(serial_number).get('away_temperature_high')
             target_temperatures = [self.user_temp_scale(away_temp_low), self.user_temp_scale(away_temp_high)]
         elif mode == 'range':
             target_mode = 'range'
-            target_temp_low = self.data.get('shared').get(serial_number).get('target_temperature_low')
-            target_temp_high = self.data.get('shared').get(serial_number).get('target_temperature_high')
+            target_temp_low = self.shared.get(serial_number).get('target_temperature_low')
+            target_temp_high = self.shared.get(serial_number).get('target_temperature_high')
             target_temperatures = [self.user_temp_scale(target_temp_low), self.user_temp_scale(target_temp_high)]
         else:
-            target_temperatures = self.user_temp_scale(self.data.get('shared').get(serial_number).get('target_temperature'))
+            target_temperatures = self.user_temp_scale(self.shared.get(serial_number).get('target_temperature'))
 
         info = {}
         info['current_state'] = {}
         info['current_state']['mode'] = mode
-        info['current_state']['temperature'] = self.user_temp_scale(self.data.get('shared').get(serial_number).get('current_temperature'))
-        info['current_state']['humidity'] = self.data.get('device').get(serial_number).get('current_humidity')
-        info['current_state']['ac'] = self.data.get('shared').get(serial_number).get('hvac_ac_state')
-        info['current_state']['heat'] = self.data.get('shared').get(serial_number).get('hvac_heater_state')
-        info['current_state']['alt_heat'] = self.data.get('shared').get(serial_number).get('hvac_alt_heat_state')
-        info['current_state']['fan'] = self.data.get('shared').get(serial_number).get('hvac_fan_state')
-        info['current_state']['auto_away'] = self.data.get('shared').get(serial_number).get('auto_away')
+        info['current_state']['temperature'] = self.user_temp_scale(self.shared.get(serial_number).get('current_temperature'))
+        info['current_state']['humidity'] = self.device.get(serial_number).get('current_humidity')
+        info['current_state']['ac'] = self.shared.get(serial_number).get('hvac_ac_state')
+        info['current_state']['heat'] = self.shared.get(serial_number).get('hvac_heater_state')
+        info['current_state']['alt_heat'] = self.shared.get(serial_number).get('hvac_alt_heat_state')
+        info['current_state']['fan'] = self.shared.get(serial_number).get('hvac_fan_state')
+        info['current_state']['auto_away'] = self.shared.get(serial_number).get('auto_away')
         info['current_state']['manual_away'] = manual_away
-        info['current_state']['leaf'] = self.data.get('device').get(serial_number).get('leaf')
-        info['current_state']['battery_level'] = self.data.get('device').get(serial_number).get('battery_level')
+        info['current_state']['leaf'] = self.device.get(serial_number).get('leaf')
+        info['current_state']['battery_level'] = self.device.get(serial_number).get('battery_level')
         info['target'] = {}
         info['target']['mode'] = target_mode
         info['target']['temperature'] = target_temperatures
-        info['target']['time_to_target'] = self.data.get('device').get(serial_number).get('time_to_target')
+        info['target']['time_to_target'] = self.device.get(serial_number).get('time_to_target')
         info['serial_number'] = serial_number
-        info['scale'] = self.data.get('device').get(serial_number).get('temperature_scale')
+        info['scale'] = self.device.get(serial_number).get('temperature_scale')
         info['location'] = structure
         info['network'] = self.get_device_network_info(serial_number)
-        info['name'] = self.data.get('shared').get(serial_number).get('name') if self.data.get('shared').get(serial_number).get('name') is not None else 'Not set'
-        info['where'] = location_map.get(self.data.get('device').get(serial_number).get('where_id'))
+        info['name'] = self.shared.get(serial_number).get('name') if self.shared.get(serial_number).get('name') is not None else 'Not set'
+        info['where'] = location_map.get(self.device.get(serial_number).get('where_id'))
 
-        if self.data.get('device').get(serial_number).get('has_humidifier'):
-            info['current_state']['humidifier'] = self.data.get('device').get(serial_number).get('humidifier_state')
-            info['target']['humidity'] = self.data.get('device').get(serial_number).get('target_humidity')
-            info['target']['humidity_enabled'] = self.data.get('device').get(serial_number).get('target_humidity_enabled')
+        if self.device.get(serial_number).get('has_humidifier'):
+            info['current_state']['humidifier'] = self.device.get(serial_number).get('humidifier_state')
+            info['target']['humidity'] = self.device.get(serial_number).get('target_humidity')
+            info['target']['humidity_enabled'] = self.device.get(serial_number).get('target_humidity_enabled')
 
         return info
 
@@ -266,15 +271,16 @@ class Nest(object):
         raise NotImplementedError()
 
     def get_devices(self, device_type='thermostat'):
-        self.get_status()
+        if self.data is None:
+            self.get_status()
 
         if device_type == 'protect':
-            return [p.get('serial_number') for p in self.data.get('topaz')]
+            return [p.get('serial_number') for p in self.data.get('topaz', [])]
 
-        structures = self.data.get('user').get(self.user_id).get('structures')
+        structures = self.data.get('user', {}).get(self.user_id).get('structures')
         structure = structures[0]
         structure_id = structure.split('.')[1]
-        devices = self.data.get('structure').get(structure_id).get('devices')
+        devices = self.structure.get(structure_id).get('devices')
 
         return [device.split('.')[1] for device in devices]
 
@@ -290,18 +296,18 @@ class Nest(object):
 
     def get_default_device(self):
         serial_number = self.get_default_serial()
-        return self.data.get('device').get(serial_number)
+        return self.device.get(serial_number)
 
     def get_device_network_info(self, serial_number=None):
         self.get_status()
         serial_number = self.get_default_serial(serial_number)
-        connection_info = self.data.get('track').get(serial_number)
+        connection_info = self.data.get('track', {}).get(serial_number)
 
         network_info = {}
         network_info['online'] = connection_info.get('online')
         network_info['last_connection'] = datetime.fromtimestamp(connection_info.get('last_connection') / 1000)
         network_info['wan_ip'] = connection_info.get('last_ip')
-        network_info['local_ip'] = self.data.get('device').get(serial_number).get('local_ip')
-        network_info['mac_address'] = self.data.get('device').get(serial_number).get('mac_address')
+        network_info['local_ip'] = self.device.get(serial_number).get('local_ip')
+        network_info['mac_address'] = self.device.get(serial_number).get('mac_address')
 
         return network_info
